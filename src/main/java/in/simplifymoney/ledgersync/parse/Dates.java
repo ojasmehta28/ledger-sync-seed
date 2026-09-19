@@ -22,17 +22,39 @@ public final class Dates {
             DateTimeFormatter.ofPattern("dd-MM-yy HH:mm", Locale.ENGLISH),
             DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm", Locale.ENGLISH),
             DateTimeFormatter.ofPattern("dd MMM yy HH:mm", Locale.ENGLISH),
-            DateTimeFormatter.ofPattern("dd-MMM-yyyy HH:mm", Locale.ENGLISH));
+            DateTimeFormatter.ofPattern("dd-MMM-yyyy HH:mm", Locale.ENGLISH)
+    );
+
+    private static final DateTimeFormatter EMAIL_FORMAT =
+            DateTimeFormatter.ofPattern(
+                    "EEE, dd MMM yyyy HH:mm:ss",
+                    Locale.ENGLISH
+            );
 
     /** Parse a local date-time written by a bank, as IST. */
     public static OffsetDateTime ist(String dateAndTime) {
         for (DateTimeFormatter f : SMS_FORMATS) {
             try {
-                return LocalDateTime.parse(dateAndTime.trim(), f).atOffset(IST);
+                return LocalDateTime.parse(
+                        dateAndTime.trim(),
+                        f
+                ).atOffset(IST);
             } catch (DateTimeParseException ignored) {
                 // try the next shape
             }
         }
         return null;
+    }
+
+    /** Parse the transaction timestamp from a bank alert email, as IST. */
+    public static OffsetDateTime emailDate(String dateAndTime) {
+        try {
+            return LocalDateTime.parse(
+                    dateAndTime.trim(),
+                    EMAIL_FORMAT
+            ).atOffset(IST);
+        } catch (DateTimeParseException e) {
+            return null;
+        }
     }
 }
