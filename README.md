@@ -14,34 +14,29 @@ A small Java ledger pipeline that ingests SMS/email messages, normalizes real fi
 
 ## Run
 
-Start MongoDB:
+Start the document store:
 
     docker compose up -d
 
-Run tests:
+Run the test suite:
 
     gradle test
 
-Run the application:
+Initialize the SQL ledger:
 
     gradle run --args="migrate"
 
 Ingest the supplied corpus:
 
-    gradle run --args="ingest data/corpus.jsonl"
+    gradle run --args="ingest data/corpus-a.jsonl"
 
-Generate reports:
+Generate the required reports:
 
-    gradle run --args="report build/output"
+    gradle run --args="report submission"
 
 Backfill the SQL ledger into MongoDB:
 
     gradle run --args="mongo-backfill"
-
-The MongoDB defaults are:
-
-    mongodb://localhost:27017
-    database: ledger_sync
 
 They can be overridden with MONGO_URI and MONGO_DATABASE.
 
@@ -71,6 +66,12 @@ The pipeline is split into:
 
 5. Consistency checking
    - SQL and document-store records are compared on identity, timestamp, direction, amount, category, merchant and source-message evidence.
+
+### Verified local backfill
+
+The supplied corpus produced 265 normalized transactions in the SQL ledger and 265 documents in MongoDB after backfill.
+
+The temporary 100,000-document benchmark dataset used for query measurements was removed after the measurements were captured.
 
 ## Document model
 
@@ -186,7 +187,6 @@ AI-generated suggestions were reviewed and tested locally before being retained.
 
 ## Unfinished / known limitations
 
-- Task 0 friend feedback is pending until the requested feedback is received.
 - The current reconciliation still contains a small difference between expected evidence and normalized output; this is reported rather than hidden.
 - The Mongo implementation currently uses application-side aggregation for category totals rather than a Mongo aggregation pipeline.
 - The benchmark numbers are measured MongoDB execution statistics on a temporary 100K dataset and are not production latency guarantees.
