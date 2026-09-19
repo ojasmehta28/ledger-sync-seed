@@ -1,197 +1,193 @@
-# ledger-sync
+# Ledger Sync
 
-Scaffolding for the Simplify Money **Software Engineering Intern (Backend, Java)** take-home.
+A small Java ledger pipeline that ingests SMS/email messages, normalizes real financial transactions, reconciles duplicate evidence, produces ledger/summary/reconciliation outputs, and backfills the normalized ledger into MongoDB.
 
-Read this file completely before you write any code. Then read
-`fixtures/corpus-a.jsonl` — not all 500 lines, but enough of them that you stop
-being surprised.
+## Stack
 
-> **Do not open a pull request here.** Work in your own fork and submit by email.
-> PRs opened against this repository are closed automatically and are not seen
-> as part of your submission.
+- Java 21
+- Gradle
+- H2
+- MongoDB 7
+- Docker Compose
+- JUnit 5
+- MongoDB Java Driver
 
----
+## Run
 
-## What this service is for
+Start MongoDB:
 
-Simplify Money tells a user where their money went. To do that, something has to
-read the bank SMS and bank emails sitting on their phone and turn them into a
-ledger the user can trust.
+    docker compose up -d
 
-This repository is that something, half-finished, with a live incident open
-against it.
+Run tests:
 
----
+    gradle test
 
-## What you are being asked to do, exactly
+Run the application:
 
-**Input:** `fixtures/corpus-a.jsonl` — one JSON object per line, each a single
-SMS or email exactly as the phone uploaded it:
+    gradle run --args="migrate"
 
-```json
-{"message_id":"m-00004-9c11ae","channel":"sms","sender":"AD-HDFCBK-S",
- "received_at":"2026-07-04T07:19:00+05:30","device_id":"dev-3f1a90c47b21",
- "body":"Rs.5 debited from a/c **4821 on 04-07-26 at 07:19 to UPI/WATER CAN. Avl Bal: Rs.92,213.10. Not you? Call 18002586161"}
-```
+Ingest the supplied corpus:
 
-**Output:** three JSON files, written by `report <dir>`.
+    gradle run --args="ingest data/corpus.jsonl"
 
-### 1. `ledger.json` — one entry per real transaction
+Generate reports:
 
-```json
-{"transactions": [
-  {"account_last4":"4821","occurred_at":"2026-07-04T20:24:00+05:30",
-   "direction":"debit","amount":"2499.50","category":"SPEND",
-   "merchant":"AMAZON PAY","source_message_ids":["m-00087-1a2b3c","m-00089-77de01"]}
-]}
-```
+    gradle run --args="report build/output"
 
-`occurred_at` is when the **bank says the transaction happened**, not when the
-message arrived. `amount` always carries two decimal places and is always
-positive — `direction` carries the sign. `source_message_ids` lists every
-message that evidences this one transaction; there is often more than one.
+Backfill the SQL ledger into MongoDB:
 
-### 2. `summary.json` — per-account totals
+    gradle run --args="mongo-backfill"
 
-```json
-{"accounts": {
-  "4821": {"spend":"87068.38","income":"101340.83",
-           "micro_count":52,"micro_total":"2357.51",
-           "transferred_out":"25000.00","transferred_in":"6000.00"}
-}}
-```
+The MongoDB defaults are:
 
-### 3. `reconciliation.json` — anything your ledger cannot account for
+    mongodb://localhost:27017
+    database: ledger_sync
 
-```json
-{"discrepancies": [
-  {"account_last4":"4821","occurred_at":"...","amount":"...","note":"..."}
-]}
-```
+They can be overridden with MONGO_URI and MONGO_DATABASE.
 
-We are not telling you how to find these, or whether there are any. Working out
-what "cannot account for" means here, and what in the data lets you check it, is
-part of the task.
+## Architecture
 
----
+The pipeline is split into:
 
-## The four categories
+1. Parsers
+   - SMS and email parsers extract transaction evidence.
+   - Non-transaction messages are ignored.
 
-Every transaction gets exactly one.
+2. Ingestion
+   - Parsed evidence is correlated using account, timestamp, direction, amount and normalized merchant identity.
+   - Duplicate evidence is merged rather than creating duplicate ledger entries.
+   - Transactions are categorized as SPEND, INCOME, MICRO or TRANSFER.
 
-| Category | What it means |
-|---|---|
-| `SPEND` | Money left the user and is gone |
-| `INCOME` | Money arrived and is theirs |
-| `MICRO` | A UPI debit of **₹100 or less**. Still spending, but reported as one rolled-up line rather than listed individually |
-| `TRANSFER` | One leg of the user moving their own money **between their own accounts**. Real — the money moved — but it is neither spending nor income, and counting it as either inflates both |
+3. SQL ledger
+   - H2 stores the normalized ledger.
+   - The SQL ledger remains the source used for reporting and reconciliation.
 
-`micro_total` is the sum of `MICRO`. `spend` is the sum of `SPEND` and does
-**not** include `MICRO` or `TRANSFER`. `income` likewise excludes `TRANSFER`.
+4. Document store
+   - MongoDB stores normalized transaction documents.
+   - Indexes support the three required access patterns:
+     - account + month + newest first
+     - account category totals access
+     - message ID lookup
 
----
+5. Consistency checking
+   - SQL and document-store records are compared on identity, timestamp, direction, amount, category, merchant and source-message evidence.
 
-## Your checkpoint
+## Document model
 
-`fixtures/corpus-a-totals.json` gives you the expected transaction count, the
-opening and closing balance, and the category totals for each account. No
-row-level answers. Use it to check yourself.
+Each MongoDB transaction contains:
 
-If your numbers do not match it, **say so and say why.** A submission whose
-numbers match because they were made to match is worse than one that does not
-match and explains itself. We can tell the difference, and we check.
+- identity
+- accountLast4
+- occurredAt
+- yearMonth
+- direction
+- amount
+- category
+- merchant
+- sourceMessageIds
 
----
+The identity is deterministic from the transaction's account, timestamp, direction, amount and normalized merchant.
 
-## Where the code is now
+This allows the backfill to be rerun without intentionally creating duplicate transaction documents.
 
-```
-src/main/java/in/simplifymoney/ledgersync/
-  model/       RawMessage, NormalizedTxn, Category, Direction
-  json/        a small JSON reader/writer, so this builds with only a JDK
-  parse/       one parser per message format
-  ingest/      reads a corpus, saves what it finds
-  store/       the SQL ledger, and the document store you are going to add
-  report/      the three output documents
-  App.java     migrate | ingest | report
-  SelfCheck.java
-```
+## Performance measurements
 
-Run it:
+The assignment requested measurements at 100,000 transactions.
 
-```bash
-./verify.sh                      # compile + run the pipeline, no network needed
-./gradlew test                   # the test suite (needs network once, for JUnit)
-./gradlew run --args="migrate"
-./gradlew run --args="ingest fixtures/corpus-a.jsonl"
-./gradlew run --args="report submission/"
-```
+The benchmark dataset was generated temporarily in MongoDB and removed after measurement. The production ledger remains at 265 normalized transactions.
 
-`./verify.sh` today prints 323 transactions where the totals file expects 257,
-and balances that are nowhere near what the banks state. That is the starting
-point, not a bug you have hit.
+| Query | Returned | Documents examined |
+|---|---:|---:|
+| Q1: account + month, newest first | 16,667 | 16,769 |
+| Q2: account category-total access | 50,000 | 50,150 |
+| Q3: message ID lookup | 1 | 1 |
 
----
+### Interpretation
 
-## What is missing, in the order we would do it
+Q1 uses the compound index:
 
-1. **`EmailParser` is a stub.** Every email in the corpus is currently dropped.
-2. **`IciciSmsParser` reads one of the ICICI formats.** There is at least one
-   more in the corpus, falling straight through.
-3. **Nothing deduplicates.** `IngestService` saves one transaction per message.
-   One transaction is not one message.
-4. **Categories are decided from the direction alone.** No `MICRO`, no
-   `TRANSFER`.
-5. **`Reports.summary` adds up whatever it is given.** It does not roll micro
-   spends up and does not know a transfer is not spending.
-6. **`Reports.reconciliation` is not written.**
-7. **`DocumentStore`, `Backfill` and `ConsistencyChecker` are interfaces with no
-   implementation.** See below.
-8. **`incident/INC-2026-09-11.md` is open.** Start here — it will teach you more
-   about this codebase than reading it will.
+    accountLast4 + yearMonth + occurredAt(desc)
 
----
+This supports both filtering and the requested newest-first ordering.
 
-## The document store
+Q2 uses the account index to restrict the scan to the requested account.
 
-The ledger is moving off SQL onto a document store. **DynamoDB preferred,
-MongoDB fine** — your choice, and say why. It must run from your
-`docker compose up`.
+Q3 uses the sourceMessageIds index and examined exactly one document for the benchmark lookup.
 
-`DocumentStore` declares the only three queries this service makes:
+The small difference between returned and examined in Q1/Q2 is due to the temporary benchmark marker filter used while measuring the 100K dataset.
 
-1. one account's transactions for one month, newest first
-2. running totals per category for an account
-3. given a message id, which transaction did it produce
+## Backfill and idempotency
 
-Design your documents so the engine serves these directly. We are not going to
-tell you what a document should look like — that decision is the exercise.
+The backfill reads the normalized SQL ledger and writes deterministic transaction identities into the document store.
 
-For each of the three, **report how many items the engine examined versus how
-many it returned, at 100,000 transactions.** DynamoDB gives you `ScannedCount`
-and `Count`; MongoDB gives you `totalDocsExamined` and `nReturned`. Put the six
-numbers in your README.
+Duplicate historical evidence is deduplicated before writing.
 
-Then:
+Repeated backfill runs therefore do not intentionally create another document for the same transaction identity.
 
-- **`Backfill`** moves what is already in SQL across. Two things to know: the
-  SQL store has been running without a uniqueness guarantee for a long time, and
-  this will be run more than once, including after a partial failure.
-- **`ConsistencyChecker`** proves the two stores agree and names precisely where
-  they do not. We will run yours against a document store we have deliberately
-  altered. It has to find what we changed. A checker that compares row counts
-  will not.
+## Reconciliation
 
----
+The generated reconciliation report compares the expected transaction evidence with the normalized ledger.
 
-## Rules
+The corpus contains evidence that does not map one-to-one to final ledger rows, including duplicate and non-transaction messages. The implementation reports these differences rather than manufacturing values to make totals match.
 
-- `model/NormalizedTxn.java`, `model/Category.java` and
-  `src/test/.../NormalizedTxnContractTest.java` are **frozen**. Do not edit
-  them. Everything behind them is yours.
-- Java. Any framework, or none — say why in your decision log.
-- Real commit history. Not one squashed commit.
-- If something in here is wrong or unclear, **email us**. Guessing when you
-  could have asked is a worse signal than asking.
+## Key decisions
 
-`talent.acquisition@simplifymoney.in`
+### 1. Parse transaction-specific amount fields
+
+Amount extraction was restricted to transaction patterns instead of taking the first currency-looking number in a message.
+
+This was important because some messages contain an available balance after the transaction amount.
+
+### 2. Ignore available-balance values
+
+The parser explicitly avoids amount candidates associated with fields such as `Avl Bal`, `Available Balance`, `Bal Avl` and similar balance markers.
+
+This prevents a balance from becoming the transaction amount.
+
+### 3. Use message correlation
+
+SMS and email evidence can represent the same underlying transaction. Correlation prevents multiple evidence records from becoming duplicate ledger transactions.
+
+### 4. Keep source message IDs
+
+Normalized transactions retain source message IDs so a ledger entry can be traced back to the evidence that produced it.
+
+### 5. Separate transfers from spending
+
+Transfers between accounts should not inflate spend totals, so transfer transactions are represented separately from SPEND and INCOME.
+
+### 6. Keep MICRO separate
+
+Small UPI-style debits are classified separately as MICRO rather than silently adding them to regular spend.
+
+### 7. Deterministic document identity
+
+The document-store identity is deterministic so repeated backfills can target the same document.
+
+### 8. Compound index for the primary account/month query
+
+The account/month/time query is common enough to justify a compound index that also satisfies newest-first ordering.
+
+### 9. Validate SQL and document stores independently
+
+A consistency checker compares the two representations instead of assuming that a successful write means the stores are equivalent.
+
+### 10. Prefer honest reconciliation
+
+When source evidence and final ledger counts differ, the difference is reported instead of changing data solely to make a checkpoint match.
+
+## AI disclosure
+
+AI assistance was used during implementation for debugging, code review, explanation of Java/MongoDB concepts, and drafting documentation.
+
+One concrete example of where AI output required correction was the transaction amount parsing: a generic "first currency amount" approach selected an available-balance value (`Rs.92,213.10`) instead of the actual transaction amount (`Rs.5`). The implementation was corrected to identify transaction-specific amount fields and ignore balance fields, and a regression test was added.
+
+AI-generated suggestions were reviewed and tested locally before being retained.
+
+## Unfinished / known limitations
+
+- Task 0 friend feedback is pending until the requested feedback is received.
+- The current reconciliation still contains a small difference between expected evidence and normalized output; this is reported rather than hidden.
+- The Mongo implementation currently uses application-side aggregation for category totals rather than a Mongo aggregation pipeline.
+- The benchmark numbers are measured MongoDB execution statistics on a temporary 100K dataset and are not production latency guarantees.
+- Further production hardening would include additional concurrency testing, failure-injection tests and operational monitoring.
