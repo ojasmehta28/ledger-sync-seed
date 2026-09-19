@@ -53,7 +53,8 @@ public final class MongoDocumentStore implements DocumentStore, AutoCloseable {
         );
 
         transactions.createIndex(
-                Indexes.ascending("identity")
+        Indexes.ascending("identity"),
+        new com.mongodb.client.model.IndexOptions().unique(true)
         );
     }
 
